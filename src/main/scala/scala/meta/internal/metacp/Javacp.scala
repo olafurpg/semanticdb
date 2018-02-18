@@ -39,17 +39,17 @@ object Javacp {
     val node = asmNodeFromBytes(bytes)
     val buf = ArrayBuffer.empty[s.SymbolInformation]
     val classSymbol = ssym(node.name)
-    val className =
-      if (node.outerClass == null) {
-        val idx = node.name.lastIndexOf('/')
-        if (idx < 0) node.name
-        else node.name.substring(idx + 1)
-      } else {
-        node.name.substring(node.outerClass.length)
+    val className = {
+      val idx = {
+        val dollar = node.name.lastIndexOf('$')
+        if (dollar < 0) node.name.lastIndexOf('/')
+        else dollar
       }
+      if (idx < 0) ???
+      else node.name.substring(idx + 1)
+    }
     val classOwner =
       ssym(node.name.substring(0, node.name.length - className.length - 1))
-    pprint.log(node.outerClass)
     val classKind =
       if (node.access.hasFlag(o.ACC_INTERFACE)) k.TRAIT else k.CLASS
     node.methods.asScala.foreach { method =>
@@ -79,11 +79,39 @@ object Javacp {
         owner = classSymbol
       )
     }
+
+    node.fields.asScala.foreach { field =>
+      val fieldSymbol = classSymbol + field.name + "."
+      val fieldKind = k.VAR
+      buf += s.SymbolInformation(
+        symbol = fieldSymbol,
+        kind = fieldKind,
+        name = field.name,
+        owner = classOwner
+      )
+    }
+
+    val decls = buf.map(_.symbol)
+    val parents = (node.superName +: node.interfaces.asScala).map { parent =>
+      val symbol = ssym(parent)
+      s.Type(s.Type.Tag.TYPE_REF, typeRef = Some(s.TypeRef(symbol = symbol)))
+    }
+
+    val classTpe = s.Type(
+      tag = s.Type.Tag.STRUCTURAL_TYPE,
+      structuralType = Some(
+        s.StructuralType(
+          declarations = decls,
+          parents = parents
+        ))
+    )
+
     buf += s.SymbolInformation(
       symbol = classSymbol,
       kind = classKind,
       name = className,
-      owner = classOwner
+      owner = classOwner,
+      tpe = Some(classTpe)
     )
 
     val uri = root.relativize(file).toString
@@ -106,7 +134,9 @@ object Javacp {
                                attrs: BasicFileAttributes): FileVisitResult = {
           if (PathIO.extension(file) == "class") {
             val db = process(root.toNIO, file)
-            println(db.toProtoString)
+            if (!file.toString.contains('$')) {
+              println(db.toProtoString)
+            }
           }
           FileVisitResult.CONTINUE
         }
