@@ -7,10 +7,13 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.ListBuffer
 import scala.meta.internal.semanticdb3.SymbolInformation.{Kind => k}
 import scala.meta.internal.semanticdb3.SymbolInformation.{Property => p}
 import scala.meta.internal.{semanticdb3 => s}
 import scala.tools.asm.ClassReader
+import scala.tools.asm.signature.SignatureReader
+import scala.tools.asm.signature.SignatureVisitor
 import scala.tools.asm.tree._
 import scala.tools.asm.{Opcodes => o}
 import org.langmeta.internal.io.PathIO
@@ -25,6 +28,112 @@ object Javacp {
                                     ClassReader.SKIP_CODE)
     node
   }
+
+  def existential = s.Type(
+    s.Type.Tag.EXISTENTIAL_TYPE,
+    existentialType = Some(
+      s.ExistentialType(
+        tpe = Some(ref("?"))
+        // ???
+      )
+    )
+  )
+  def ref(symbol: String, args: List[s.Type] = Nil) = {
+    s.Type(
+      s.Type.Tag.TYPE_REF,
+      typeRef = Some(s.TypeRef(prefix = None, symbol, args))
+    )
+  }
+
+  object void extends SignatureVisitor(o.ASM5)
+  case class JType(isArray: Boolean, symbol: String, args: Seq[SemanticdbSignatureVisitor])
+  class SemanticdbSignatureVisitor extends SignatureVisitor(o.ASM5) {
+    val formatTypeParameters = ListBuffer.empty[String]
+    val stack = ListBuffer.empty[JType]
+    var symbol = ""
+    val args = ListBuffer.empty[SemanticdbSignatureVisitor]
+    var jType = JType(isArray = false, "", args)
+
+    def toType: s.Type = ref(symbol, args.map(_.toType).toList)
+
+    override def visitFormalTypeParameter(name: String): Unit = {
+      pprint.log(name)
+      formatTypeParameters += name
+    }
+
+    override def visitTypeArgument(): Unit = {
+      pprint.log("Type Argument")
+    }
+
+    override def visitEnd(): Unit = {
+      pprint.log("END")
+    }
+
+    override def visitTypeVariable(name: String): Unit = {
+      pprint.log(name)
+    }
+
+    override def visitArrayType(): SignatureVisitor = {
+      pprint.log("Array type")
+      this
+    }
+
+    override def visitExceptionType(): SignatureVisitor = {
+      pprint.log("exceptionType")
+      this
+    }
+
+    override def visitSuperclass(): SignatureVisitor = {
+      pprint.log("superClass")
+      this
+    }
+
+    override def visitInterface(): SignatureVisitor = {
+      pprint.log("Interface")
+      this
+    }
+
+    override def visitInterfaceBound(): SignatureVisitor = {
+      pprint.log("interface bound")
+      this
+    }
+
+    override def visitInnerClassType(name: String): Unit = {
+      pprint.log(name)
+    }
+
+    override def visitClassBound(): SignatureVisitor = {
+      pprint.log("classBound")
+      this
+    }
+
+    override def visitBaseType(descriptor: Char): Unit = {
+      pprint.log(descriptor)
+    }
+
+    override def visitTypeArgument(wildcard: Char): SignatureVisitor = {
+      pprint.log(wildcard)
+      this
+    }
+
+    override def visitParameterType(): SignatureVisitor = {
+      pprint.log("Parameter type")
+      this
+    }
+
+    override def visitReturnType(): SignatureVisitor = {
+      pprint.log("Return type")
+      this
+    }
+
+    override def visitClassType(name: String): Unit = {
+
+      pprint.log(name)
+    }
+  }
+
+  def array(tpe: s.Type) =
+    ref("_root_.scala.Array#", tpe :: Nil)
 
   def ssym(string: String): String =
     "_root_." + string.replace('/', '.').replace('$', '.') + "."
@@ -53,6 +162,12 @@ object Javacp {
     val classKind =
       if (node.access.hasFlag(o.ACC_INTERFACE)) k.TRAIT else k.CLASS
     node.methods.asScala.foreach { method =>
+      if (method.signature != null) {
+        pprint.log(method.signature)
+        val signatureReader = new SignatureReader(method.signature)
+        val v = new SemanticdbSignatureVisitor
+        signatureReader.accept(v)
+      }
       val descriptor = method.desc
       val methodSymbol = classSymbol + method.name + "(" + descriptor + ")."
       val methodKind = k.DEF
@@ -123,10 +238,16 @@ object Javacp {
   }
 
   def main(args: Array[String]): Unit = {
-    implicit val cwd: AbsolutePath =
-      PathIO.workingDirectory.resolve("..").resolve("scalameta")
-    val root = AbsolutePath(
-      "semanticdb/integration/target/scala-2.12/classes/cp")
+    run(args)
+//    val signature =
+//      "<T:Ljava/lang/Object;>(Ljava/util/ArrayList<Ljava/util/ArrayList<[TT;>;>;)Ljava/util/ArrayList<Ljava/util/ArrayList<[TT;>;>;"
+//    val sr = new SignatureReader(signature)
+//    val v = new SemanticdbSignatureVisitor
+//    sr.accept(v)
+  }
+
+  def run(args: Array[String]): Unit = {
+    val root = AbsolutePath("target/scala-2.12/classes/test")
     Files.walkFileTree(
       root.toNIO,
       new SimpleFileVisitor[Path] {
@@ -134,9 +255,9 @@ object Javacp {
                                attrs: BasicFileAttributes): FileVisitResult = {
           if (PathIO.extension(file) == "class") {
             val db = process(root.toNIO, file)
-            if (!file.toString.contains('$')) {
-              println(db.toProtoString)
-            }
+//            if (!file.toString.contains('$')) {
+//              pprint.log(db.toProtoString)
+//            }
           }
           FileVisitResult.CONTINUE
         }
