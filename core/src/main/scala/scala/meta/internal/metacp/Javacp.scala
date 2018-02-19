@@ -14,12 +14,13 @@ import scala.meta.internal.{semanticdb3 => s}
 import scala.tools.asm.ClassReader
 import scala.tools.asm.signature.SignatureReader
 import scala.tools.asm.signature.SignatureVisitor
-import scala.tools.asm.tree._
+import scala.tools.asm.tree.ClassNode
 import scala.tools.asm.{Opcodes => o}
 import org.langmeta.internal.io.PathIO
 import org.langmeta.io.AbsolutePath
 
 object Javacp {
+
   def asmNodeFromBytes(bytes: Array[Byte]): ClassNode = {
     val node = new ClassNode()
     new ClassReader(bytes).accept(
@@ -40,7 +41,8 @@ object Javacp {
       )
     )
   )
-  def ref(symbol: String, args: List[s.Type] = Nil) = {
+
+  def ref(symbol: String, args: List[s.Type] = Nil): s.Type = {
     s.Type(
       s.Type.Tag.TYPE_REF,
       typeRef = Some(s.TypeRef(prefix = None, symbol, args))
@@ -48,22 +50,66 @@ object Javacp {
   }
 
   object void extends SignatureVisitor(o.ASM5)
-  case class JType(
-      isArray: Boolean,
-      symbol: String,
-      args: Seq[SemanticdbSignatureVisitor])
-  class SemanticdbSignatureVisitor extends SignatureVisitor(o.ASM5) {
-    val formatTypeParameters = ListBuffer.empty[String]
-    val stack = ListBuffer.empty[JType]
-    var symbol = ""
-    val args = ListBuffer.empty[SemanticdbSignatureVisitor]
-    var jType = JType(isArray = false, "", args)
+  class JType(
+      var isArray: Boolean,
+      var symbol: String,
+      val args: ListBuffer[JType]) {
+    override def toString: String = {
+      val suffix = if (isArray) "[]" else ""
+      if (args.isEmpty) symbol + suffix
+      else symbol + args.mkString("<", ", ", ">") + suffix
+    }
+  }
 
-    def toType: s.Type = ref(symbol, args.map(_.toType).toList)
+  sealed trait SignatureMode
+  object SignatureMode {
+    case object ParameterType extends SignatureMode
+    case object FormalType extends SignatureMode
+    case object ReturnType extends SignatureMode
+  }
+  class SemanticdbSignatureVisitor extends SignatureVisitor(o.ASM5) {
+    import SignatureMode._
+    def newTpe = new JType(false, "", ListBuffer.empty[JType])
+    var owners = List.empty[JType]
+    var tpe: JType = newTpe
+    def returnType = tpe
+    val parameterTypes = ListBuffer.empty[JType]
+    val formatTypeParameters = ListBuffer.empty[String]
+    var mode: SignatureMode = FormalType
+
+
+    override def visitParameterType(): SignatureVisitor = {
+      mode = ParameterType
+      pprint.log("Parameter type")
+      tpe = newTpe
+      owners = tpe :: owners
+      parameterTypes += tpe
+      this
+    }
+
+    override def visitClassType(name: String): Unit = {
+      pprint.log(name)
+      tpe.symbol = ssym(name)
+    }
 
     override def visitFormalTypeParameter(name: String): Unit = {
       pprint.log(name)
       formatTypeParameters += name
+    }
+
+    override def visitTypeArgument(wildcard: Char): SignatureVisitor = {
+      pprint.log(wildcard)
+      val arg = newTpe
+      tpe.args += arg
+      tpe = arg
+      owners = tpe :: owners
+      this
+    }
+
+    override def visitArrayType(): SignatureVisitor = {
+      tpe.isArray = true
+      pprint.log("Array type")
+      this
     }
 
     override def visitTypeArgument(): Unit = {
@@ -71,16 +117,29 @@ object Javacp {
     }
 
     override def visitEnd(): Unit = {
+      mode match {
+        case ParameterType =>
+          tpe = owners.head
+          owners = owners.tail
+        case ReturnType =>
+          pprint.log(tpe)
+          pprint.log(owners)
+          tpe = owners.head
+          owners = owners.tail
+        case _ =>
+      }
       pprint.log("END")
     }
 
-    override def visitTypeVariable(name: String): Unit = {
-      pprint.log(name)
+    def endType(): Unit = {
+
     }
 
-    override def visitArrayType(): SignatureVisitor = {
-      pprint.log("Array type")
-      this
+    override def visitTypeVariable(name: String): Unit = {
+      tpe.symbol = ssym(name)
+      pprint.log(owners)
+      owners = owners.tail
+      pprint.log(name)
     }
 
     override def visitExceptionType(): SignatureVisitor = {
@@ -116,25 +175,15 @@ object Javacp {
       pprint.log(descriptor)
     }
 
-    override def visitTypeArgument(wildcard: Char): SignatureVisitor = {
-      pprint.log(wildcard)
-      this
-    }
-
-    override def visitParameterType(): SignatureVisitor = {
-      pprint.log("Parameter type")
-      this
-    }
-
     override def visitReturnType(): SignatureVisitor = {
+      mode = ReturnType
       pprint.log("Return type")
+      tpe = newTpe
+      owners = tpe :: owners
+      pprint.log(owners)
       this
     }
 
-    override def visitClassType(name: String): Unit = {
-
-      pprint.log(name)
-    }
   }
 
   def array(tpe: s.Type) =
@@ -165,13 +214,18 @@ object Javacp {
     val classOwner =
       ssym(node.name.substring(0, node.name.length - className.length - 1))
     val classKind =
-      if (node.access.hasFlag(o.ACC_INTERFACE)) k.TRAIT else k.CLASS
+      if (node.access.hasFlag(o.ACC_INTERFACE)) k.TRAIT
+      else k.CLASS
     node.methods.asScala.foreach { method =>
       if (method.signature != null) {
         pprint.log(method.signature)
         val signatureReader = new SignatureReader(method.signature)
         val v = new SemanticdbSignatureVisitor
         signatureReader.accept(v)
+        pprint.log(v.tpe)
+        pprint.log(v.parameterTypes)
+        pprint.log(v.returnType)
+        pprint.log(v.owners)
       }
       val descriptor = method.desc
       val methodSymbol = classSymbol + method.name + "(" + descriptor + ")."
@@ -252,7 +306,7 @@ object Javacp {
   }
 
   def run(args: Array[String]): Unit = {
-    val root = AbsolutePath("target/scala-2.12/classes/test")
+    val root = AbsolutePath("core/target/scala-2.12/classes/test")
     Files.walkFileTree(
       root.toNIO,
       new SimpleFileVisitor[Path] {
@@ -260,6 +314,7 @@ object Javacp {
             file: Path,
             attrs: BasicFileAttributes): FileVisitResult = {
           if (PathIO.extension(file) == "class") {
+
             val db = process(root.toNIO, file)
 //            if (!file.toString.contains('$')) {
 //              pprint.log(db.toProtoString)
