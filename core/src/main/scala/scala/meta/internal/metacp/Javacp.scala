@@ -32,16 +32,6 @@ object Javacp {
     node
   }
 
-  def existential = s.Type(
-    s.Type.Tag.EXISTENTIAL_TYPE,
-    existentialType = Some(
-      s.ExistentialType(
-        tpe = Some(ref("?"))
-        // ???
-      )
-    )
-  )
-
   def ref(symbol: String, args: List[s.Type] = Nil): s.Type = {
     s.Type(
       s.Type.Tag.TYPE_REF,
@@ -49,12 +39,15 @@ object Javacp {
     )
   }
 
-  object void extends SignatureVisitor(o.ASM5)
   class JType(
       var isArray: Boolean,
       var symbol: String,
       var name: String,
       val args: ListBuffer[JType]) {
+    def setPrimitive(name: String): Unit = {
+      this.symbol = s"_root_.scala.$name#"
+      this.name = name
+    }
     def setSymbol(newSymbol: String): Unit = {
       symbol = ssym(newSymbol)
       name = getName(newSymbol)
@@ -145,21 +138,23 @@ object Javacp {
       mode match {
         case ParameterType =>
           tpe = owners.head
-          owners = owners.tail
+          endType()
         case ReturnType =>
           tpe = owners.head
-          owners = owners.tail
+          endType()
         case _ =>
       }
 //      pprint.log("END")
     }
 
-    def endType(): Unit = {}
+    def endType(): Unit = {
+      owners = owners.tail
+    }
 
     override def visitTypeVariable(name: String): Unit = {
       tpe.symbol = name
       tpe.name = name
-      owners = owners.tail
+      endType()
     }
 
     override def visitExceptionType(): SignatureVisitor = {
@@ -192,7 +187,19 @@ object Javacp {
     }
 
     override def visitBaseType(descriptor: Char): Unit = {
-//      pprint.log(descriptor)
+      descriptor match {
+        case 'V' => tpe.setPrimitive("Unit")
+        case 'B' => tpe.setPrimitive("Byte")
+        case 'J' => tpe.setPrimitive("Long")
+        case 'Z' => tpe.setPrimitive("Boolean")
+        case 'I' => tpe.setPrimitive("Int")
+        case 'S' => tpe.setPrimitive("Short")
+        case 'C' => tpe.setPrimitive("Char")
+        case 'F' => tpe.setPrimitive("Float")
+        case 'D' => tpe.setPrimitive("Double")
+        case _ => sys.error(descriptor.toString)
+      }
+      endType()
     }
 
     override def visitReturnType(): SignatureVisitor = {
@@ -210,12 +217,14 @@ object Javacp {
     ref("_root_.scala.Array#", tpe :: Nil)
 
   def ssym(string: String): String =
-    "_root_." + string.replace('/', '.').replace('$', '.') + "."
+    "_root_." + string.replace('$', '/') + "/"
 
   implicit class XtensionAccess(n: Int) {
     def hasFlag(flag: Int): Boolean =
       (flag & n) != 0
   }
+
+  case class Declaration(returnType: s.Type, params: List[JType])
 
   def process(root: Path, file: Path): s.TextDocument = {
     val bytes = Files.readAllBytes(file)
@@ -228,44 +237,61 @@ object Javacp {
     val classKind =
       if (node.access.hasFlag(o.ACC_INTERFACE)) k.TRAIT
       else k.CLASS
-    node.methods.asScala.foreach { method =>
-      if (method.signature != null) {
-        val signatureReader = new SignatureReader(method.signature)
-        val v = new SemanticdbSignatureVisitor
-        signatureReader.accept(v)
-        val names = v.parameterTypes.map(_.name)
-        pprint.log(names)
-        pprint.log(v.tpe)
-        pprint.log(v.parameterTypes)
-        pprint.log(v.returnType)
-        pprint.log(v.formatTypeParameters)
-        pprint.log(v.owners)
-      }
-      val descriptor = method.desc
-      val methodSymbol = classSymbol + method.name + "(" + descriptor + ")."
-      val methodKind = k.DEF
-      if (method.parameters != null) {
-        method.parameters.asScala.zipWithIndex.foreach {
-          case (param, i) =>
-            val paramName =
-              if (param.name == null) "arg" + i
-              else param.name
-            val paramSymbol = methodSymbol + "(" + paramName + ")"
-            val paramKind = k.PARAMETER
-            buf += s.SymbolInformation(
-              symbol = paramSymbol,
-              kind = paramKind,
-              name = paramName,
-              owner = methodSymbol
-            )
+    val methods = node.methods.asScala
+    val decriptorUsage =
+      scala.collection.mutable.Map.empty[String, Int].withDefaultValue(0)
+    val descriptors = methods.map { method =>
+      val toParse =
+        if (method.signature != null) method.signature
+        else method.desc
+      val signatureReader = new SignatureReader(toParse)
+      pprint.log(toParse)
+      val v = new SemanticdbSignatureVisitor
+      signatureReader.accept(v)
+      val names = v.parameterTypes.map(_.name)
+      pprint.log(names)
+      pprint.log(v.tpe)
+      pprint.log(v.parameterTypes)
+      pprint.log(v.returnType)
+      pprint.log(v.formatTypeParameters)
+      pprint.log(v.owners)
+      val descriptor = v.parameterTypes.map(_.name).mkString(",")
+      descriptor -> method.desc
+    }
+    methods.zip(descriptors).foreach {
+      case (method, descriptorPair @ (descriptor, desc)) =>
+        val finalDescriptor = {
+          val conflicting = descriptors.filter(_._1 == descriptor)
+          if (conflicting.lengthCompare(1) == 0) descriptor
+          else {
+            val index = conflicting.indexOf(descriptorPair) + 1
+            descriptor + "+" + index
+          }
         }
-      }
-      buf += s.SymbolInformation(
-        symbol = methodSymbol,
-        kind = methodKind,
-        name = method.name,
-        owner = classSymbol
-      )
+        val methodSymbol = classSymbol + method.name + "(" + finalDescriptor + ")."
+        val methodKind = k.DEF
+        if (method.parameters != null) {
+          method.parameters.asScala.zipWithIndex.foreach {
+            case (param, i) =>
+              val paramName =
+                if (param.name == null) "arg" + i
+                else param.name
+              val paramSymbol = methodSymbol + "(" + paramName + ")"
+              val paramKind = k.PARAMETER
+              buf += s.SymbolInformation(
+                symbol = paramSymbol,
+                kind = paramKind,
+                name = paramName,
+                owner = methodSymbol
+              )
+          }
+        }
+        buf += s.SymbolInformation(
+          symbol = methodSymbol,
+          kind = methodKind,
+          name = method.name,
+          owner = classSymbol
+        )
     }
 
     node.fields.asScala.foreach { field =>

@@ -4,5 +4,23 @@ import java.util.ArrayList;
 import java.util.HashMap;
 
 class Test {
-    public <T extends CharSequence> ArrayList<T> foo(HashMap<Integer, String[]> n, T e) { return null; }
+    class Inner {
+        class Foo {
+        }
+    }
+
+    class Inner2 {
+        class Foo {
+        }
+    }
+
+    public void move(Inner.Foo foo) {
+    }
+
+    public void move(Inner2.Foo foo) {
+    }
+
+    public <T extends CharSequence> ArrayList<T> foo(HashMap<Integer, String[]> n, T e, int number) {
+        return null;
+    }
 }
