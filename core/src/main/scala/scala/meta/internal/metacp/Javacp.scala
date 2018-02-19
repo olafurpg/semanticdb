@@ -53,7 +53,19 @@ object Javacp {
   class JType(
       var isArray: Boolean,
       var symbol: String,
+      var name: String,
       val args: ListBuffer[JType]) {
+    def setSymbol(newSymbol: String): Unit = {
+      symbol = ssym(newSymbol)
+      name = getName(newSymbol)
+    }
+
+    def toType: s.Type = {
+      val tpe = array(ref(symbol, args.iterator.map(_.toType).toList))
+      if (isArray) array(tpe)
+      else tpe
+    }
+
     override def toString: String = {
       val suffix = if (isArray) "[]" else ""
       if (args.isEmpty) symbol + suffix
@@ -67,20 +79,33 @@ object Javacp {
     case object FormalType extends SignatureMode
     case object ReturnType extends SignatureMode
   }
+
+  def getName(symbol: String): String = {
+    val dollar = symbol.lastIndexOf('$')
+    if (dollar < 0) {
+      val slash = symbol.lastIndexOf('/')
+      if (slash < 0) sys.error(s"Missing $$ or / from symbol '$symbol'")
+      else symbol.substring(slash + 1)
+    } else {
+      symbol.substring(dollar + 1)
+    }
+  }
+
   class SemanticdbSignatureVisitor extends SignatureVisitor(o.ASM5) {
     import SignatureMode._
-    def newTpe = new JType(false, "", ListBuffer.empty[JType])
+    def newTpe = new JType(false, "", "", ListBuffer.empty[JType])
     var owners = List.empty[JType]
     var tpe: JType = newTpe
-    def returnType = tpe
-    val parameterTypes = ListBuffer.empty[JType]
-    val formatTypeParameters = ListBuffer.empty[String]
+    def returnType: Option[JType] =
+      if (mode == ReturnType) Some(tpe)
+      else None
+    val parameterTypes: ListBuffer[JType] = ListBuffer.empty[JType]
+    val formatTypeParameters: ListBuffer[String] = ListBuffer.empty[String]
     var mode: SignatureMode = FormalType
 
-
     override def visitParameterType(): SignatureVisitor = {
+//      pprint.log("Parameter type")
       mode = ParameterType
-      pprint.log("Parameter type")
       tpe = newTpe
       owners = tpe :: owners
       parameterTypes += tpe
@@ -88,17 +113,17 @@ object Javacp {
     }
 
     override def visitClassType(name: String): Unit = {
-      pprint.log(name)
-      tpe.symbol = ssym(name)
+//      pprint.log(name)
+      tpe.setSymbol(name)
     }
 
     override def visitFormalTypeParameter(name: String): Unit = {
-      pprint.log(name)
+//      pprint.log(name)
       formatTypeParameters += name
     }
 
     override def visitTypeArgument(wildcard: Char): SignatureVisitor = {
-      pprint.log(wildcard)
+//      pprint.log(wildcard)
       val arg = newTpe
       tpe.args += arg
       tpe = arg
@@ -107,13 +132,13 @@ object Javacp {
     }
 
     override def visitArrayType(): SignatureVisitor = {
+      //      pprint.log("Array type")
       tpe.isArray = true
-      pprint.log("Array type")
       this
     }
 
     override def visitTypeArgument(): Unit = {
-      pprint.log("Type Argument")
+//      pprint.log("Type Argument")
     }
 
     override def visitEnd(): Unit = {
@@ -122,65 +147,60 @@ object Javacp {
           tpe = owners.head
           owners = owners.tail
         case ReturnType =>
-          pprint.log(tpe)
-          pprint.log(owners)
           tpe = owners.head
           owners = owners.tail
         case _ =>
       }
-      pprint.log("END")
+//      pprint.log("END")
     }
 
-    def endType(): Unit = {
-
-    }
+    def endType(): Unit = {}
 
     override def visitTypeVariable(name: String): Unit = {
-      tpe.symbol = ssym(name)
-      pprint.log(owners)
+      tpe.symbol = name
+      tpe.name = name
       owners = owners.tail
-      pprint.log(name)
     }
 
     override def visitExceptionType(): SignatureVisitor = {
-      pprint.log("exceptionType")
+//      pprint.log("exceptionType")
       this
     }
 
     override def visitSuperclass(): SignatureVisitor = {
-      pprint.log("superClass")
+//      pprint.log("superClass")
       this
     }
 
     override def visitInterface(): SignatureVisitor = {
-      pprint.log("Interface")
+//      pprint.log("Interface")
       this
     }
 
     override def visitInterfaceBound(): SignatureVisitor = {
-      pprint.log("interface bound")
+//      pprint.log("interface bound")
       this
     }
 
     override def visitInnerClassType(name: String): Unit = {
-      pprint.log(name)
+//      pprint.log(name)
     }
 
     override def visitClassBound(): SignatureVisitor = {
-      pprint.log("classBound")
+//      pprint.log("classBound")
       this
     }
 
     override def visitBaseType(descriptor: Char): Unit = {
-      pprint.log(descriptor)
+//      pprint.log(descriptor)
     }
 
     override def visitReturnType(): SignatureVisitor = {
       mode = ReturnType
-      pprint.log("Return type")
+//      pprint.log("Return type")
       tpe = newTpe
       owners = tpe :: owners
-      pprint.log(owners)
+//      pprint.log(owners)
       this
     }
 
@@ -202,15 +222,7 @@ object Javacp {
     val node = asmNodeFromBytes(bytes)
     val buf = ArrayBuffer.empty[s.SymbolInformation]
     val classSymbol = ssym(node.name)
-    val className = {
-      val idx = {
-        val dollar = node.name.lastIndexOf('$')
-        if (dollar < 0) node.name.lastIndexOf('/')
-        else dollar
-      }
-      if (idx < 0) ???
-      else node.name.substring(idx + 1)
-    }
+    val className = getName(node.name)
     val classOwner =
       ssym(node.name.substring(0, node.name.length - className.length - 1))
     val classKind =
@@ -218,13 +230,15 @@ object Javacp {
       else k.CLASS
     node.methods.asScala.foreach { method =>
       if (method.signature != null) {
-        pprint.log(method.signature)
         val signatureReader = new SignatureReader(method.signature)
         val v = new SemanticdbSignatureVisitor
         signatureReader.accept(v)
+        val names = v.parameterTypes.map(_.name)
+        pprint.log(names)
         pprint.log(v.tpe)
         pprint.log(v.parameterTypes)
         pprint.log(v.returnType)
+        pprint.log(v.formatTypeParameters)
         pprint.log(v.owners)
       }
       val descriptor = method.desc
@@ -316,9 +330,9 @@ object Javacp {
           if (PathIO.extension(file) == "class") {
 
             val db = process(root.toNIO, file)
-//            if (!file.toString.contains('$')) {
-//              pprint.log(db.toProtoString)
-//            }
+            if (!file.toString.contains('$')) {
+              pprint.log(db.toProtoString)
+            }
           }
           FileVisitResult.CONTINUE
         }
