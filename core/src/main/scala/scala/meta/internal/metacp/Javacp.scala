@@ -22,10 +22,12 @@ import org.langmeta.io.AbsolutePath
 object Javacp {
   def asmNodeFromBytes(bytes: Array[Byte]): ClassNode = {
     val node = new ClassNode()
-    new ClassReader(bytes).accept(node,
-                                  ClassReader.SKIP_DEBUG |
-                                    ClassReader.SKIP_FRAMES |
-                                    ClassReader.SKIP_CODE)
+    new ClassReader(bytes).accept(
+      node,
+      ClassReader.SKIP_DEBUG |
+        ClassReader.SKIP_FRAMES |
+        ClassReader.SKIP_CODE
+    )
     node
   }
 
@@ -46,7 +48,10 @@ object Javacp {
   }
 
   object void extends SignatureVisitor(o.ASM5)
-  case class JType(isArray: Boolean, symbol: String, args: Seq[SemanticdbSignatureVisitor])
+  case class JType(
+      isArray: Boolean,
+      symbol: String,
+      args: Seq[SemanticdbSignatureVisitor])
   class SemanticdbSignatureVisitor extends SignatureVisitor(o.ASM5) {
     val formatTypeParameters = ListBuffer.empty[String]
     val stack = ListBuffer.empty[JType]
@@ -251,8 +256,9 @@ object Javacp {
     Files.walkFileTree(
       root.toNIO,
       new SimpleFileVisitor[Path] {
-        override def visitFile(file: Path,
-                               attrs: BasicFileAttributes): FileVisitResult = {
+        override def visitFile(
+            file: Path,
+            attrs: BasicFileAttributes): FileVisitResult = {
           if (PathIO.extension(file) == "class") {
             val db = process(root.toNIO, file)
 //            if (!file.toString.contains('$')) {
